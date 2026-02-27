@@ -8,6 +8,32 @@ import pandas as pd
 import requests
 import zeep
 
+# API Date Limits (in days) per product
+API_LIMITS = {
+    'water_level': 31,
+    'one_minute_water_level': 4,
+    'hourly_height': 365,
+    'high_low': 365,
+    'daily_mean': 3650,
+    'daily_maximum': 3650,
+    'daily_minimum': 3650,
+    'monthly_mean': 73000,
+    'predictions': 365,
+    'air_temperature': 31,
+    'water_temperature': 31,
+    'wind': 31,
+    'air_pressure': 31,
+    'conductivity': 31,
+    'visibility': 31,
+    'humidity': 31,
+    'salinity': 31,
+    'currents': 31,
+    'currents_predictions': 31,
+    'air_gap': 31,
+    'ofs_water_level': 31,
+    'default': 31
+}
+
 
 class COOPSAPIError(Exception):
     """Raised when a NOAA CO-OPS API request returns an error."""
@@ -684,9 +710,9 @@ class Station:
         delta = end_dt - begin_dt
 
         # Query params fit within *single block* API request
-        if delta.days <= 31 or (
-            delta.days <= 365 and (product == "hourly_height" or product == "high_low")
-        ):
+        max_days = API_LIMITS.get(product, API_LIMITS['default'])
+
+        if delta.days <= max_days:
             data_url = self._build_request_url(
                 begin_dt.strftime("%Y%m%d %H:%M"),
                 end_dt.strftime("%Y%m%d %H:%M"),
@@ -701,9 +727,7 @@ class Station:
 
         # Query params require *multiple block* API request
         else:
-            block_size = (
-                365 if product == "hourly_height" or product == "high_low" else 31
-            )
+            block_size = max_days
             num_blocks = int(math.floor(delta.days / block_size))
             df = pd.DataFrame([])
 
