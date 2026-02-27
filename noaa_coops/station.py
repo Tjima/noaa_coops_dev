@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import math
+import time  # CHANGE 1: Added time module for retry delays
 from datetime import datetime, timedelta
 from typing import Optional, Union
 
@@ -38,23 +39,28 @@ def get_stations_from_bbox(
     Returns:
         list[str]: A list of station IDs.
     """
+    # CHANGE 2: Moved validation BEFORE the API call.
+    # Original code validated AFTER fetching data — wasteful if inputs are wrong.
+    if len(lat_coords) != 2 or len(lon_coords) != 2:
+        raise ValueError("lat_coords and lon_coords must be of length 2.")
+
     station_list = []
     data_url = "https://api.tidesandcurrents.noaa.gov/mdapi/prod/webapi/stations.json"
     response = requests.get(data_url)
-    json_dict = response.json()
 
-    if len(lat_coords) != 2 or len(lon_coords) != 2:
-        raise ValueError("lat_coords and lon_coords must be of length 2.")
+    # CHANGE 3: Added HTTP status check for the bbox API call.
+    # Original code had no check — would crash with confusing error if API was down.
+    if response.status_code != 200:
+        raise COOPSAPIError(
+            f"Failed to fetch stations list. Status Code: {response.status_code}. "
+            f"Reason: {response.reason}"
+        )
+
+    json_dict = response.json()
 
     # Ensure lat_coords and lon_coords are in the correct order
     lat_coords = sorted(lat_coords)
     lon_coords = sorted(lon_coords)
-
-    # if lat_coords[0] > lat_coords[1]:
-    #     lat_coords[0], lat_coords[1] = lat_coords[1], lat_coords[0]
-
-    # if lon_coords[0] > lon_coords[1]:
-    #     lon_coords[0], lon_coords[1] = lon_coords[1], lon_coords[0]
 
     # Find stations in bounding box
     for station_dict in json_dict["stations"]:
@@ -127,7 +133,11 @@ class Station:
         self.data_inventory = inventory_dict
 
     def get_metadata(self):
-        """Get metadata for Station and append to Station object."""
+        """Get metadata for Station and append to Station object.
+
+        Retries up to 3 times on server errors (e.g. 504 Gateway Timeout)
+        before raising a COOPSAPIError.
+        """
         metadata_base_url = (
             "https://api.tidesandcurrents.noaa.gov/mdapi/" "prod/webapi/stations/"
         )
@@ -142,7 +152,33 @@ class Station:
         metadata_url = (
             metadata_base_url + self.id + extension + metadata_expand + units_for_url
         )
-        response = requests.get(metadata_url)
+
+        # CHANGE 4: Added retry logic to get_metadata().
+        # Original code: response = requests.get(metadata_url) — single attempt only.
+        # This caused test_station_metadata to CRASH with a JSONDecodeError when
+        # NOAA's server returned a 504 Gateway Timeout (HTML, not JSON).
+        # Fix: retry up to 3 times with exponential backoff (1s, 2s, 4s waits).
+        max_retries = 3
+        retry_delay = 1  # seconds
+
+        for attempt in range(max_retries):
+            response = requests.get(metadata_url)
+
+            if response.status_code == 200:
+                break  # Success, exit retry loop
+
+            # Server-side errors worth retrying (504 = Gateway Timeout, 503 = Unavailable)
+            if response.status_code in [429, 503, 504] and attempt < max_retries - 1:
+                time.sleep(retry_delay)
+                retry_delay *= 2  # Exponential backoff: 1s → 2s → 4s
+                continue
+
+            # Non-retryable error or retries exhausted — raise immediately
+            raise COOPSAPIError(
+                f"CO-OPS Metadata API returned an error after {attempt + 1} attempt(s). "
+                f"Status Code: {response.status_code}. Reason: {response.reason}"
+            )
+
         json_dict = response.json()
         station_metadata = json_dict["stations"][0]
 
@@ -775,74 +811,3 @@ if __name__ == "__main__":
     print(df.info())
 
     df.to_csv("debug.csv")
-
-    # station = nc.Station(id="9447130")  # Seattle, WA
-
-    # Test replicating the data seen on the station page:
-    # https://tidesandcurrents.noaa.gov/waterlevels.html?id=9447130&units=metric&bdate=20220101&edate=20220430&timezone=GMT&datum=MLLW&interval=h&action=
-    # 2022-01-01 00:00:00, 2022-04-30 23:00:00, 1-hr, MLLW, GMT, metric
-
-    # print("Test that metadata is working:")
-    # pprint(station.metadata)
-    # print("\n" * 2)
-
-    # print("Test that attributes are populated from metadata:")
-    # pprint(station.sensors)
-    # print("\n" * 2)
-
-    # print("Test that data_inventory is working:")
-    # pprint(station.data_inventory, indent=4, compact=True, width=100)
-    # print("\n" * 2)
-
-    # print("6-min water level station request:")
-    # data = station.get_data(
-    #     begin_date="20220101 00:00",
-    #     end_date="20220430 23:00",
-    #     product="hourly_height",
-    #     datum="MLLW",
-    #     units="metric",
-    #     time_zone="gmt",
-    # )
-    # pprint(data.head())
-    # print("\n" * 2)
-
-    # pprint(data.tail())
-    # print("\n" * 2)
-
-    # print("6-min water level station request:")
-    # data = station.get_data(
-    #     begin_date="20150101",
-    #     end_date="20150331",
-    #     product="water_level",
-    #     datum="MLLW",
-    #     units="metric",
-    #     time_zone="gmt",
-    # )
-    # pprint(data.head())
-    # print("\n" * 2)
-
-    # print("1-hr water level station request (SHOULD NOT WORK):")
-    # data = station.get_data(
-    #     begin_date="20150101",
-    #     end_date="20150331",
-    #     product="water_level",
-    #     interval="h",
-    #     datum="MLLW",
-    #     units="metric",
-    #     time_zone="gmt",
-    # )
-    # pprint(data.head())
-    # print("\n" * 2)
-
-    # print("high-low request:")
-    # data = station.get_data(
-    #     begin_date="20150101",
-    #     end_date="20150331",
-    #     product="high_low",
-    #     datum="MLLW",
-    #     units="metric",
-    #     time_zone="gmt",
-    # )
-    # pprint(data.head())
-    # print("\n" * 2)
-    # pprint(data.loc["2015"])
