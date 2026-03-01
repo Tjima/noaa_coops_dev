@@ -21,7 +21,12 @@ class COOPSAPIError(Exception):
         self.message = message
         super().__init__(self.message)
 
-
+# add allowed derived api
+DPAPI_PRODUCTS=[
+        "toptenwaterlevels",
+        "extremewaterlevels",
+        "sealvltrends"
+    ]
 def get_stations_from_bbox(
     lat_coords: list[float],
     lon_coords: list[float],
@@ -127,6 +132,8 @@ class Station:
         self.data_inventory = inventory_dict
 
     def get_metadata(self):
+        # TBD: retrieval of historic current info
+         
         """Get metadata for Station and append to Station object."""
         metadata_base_url = (
             "https://api.tidesandcurrents.noaa.gov/mdapi/" "prod/webapi/stations/"
@@ -428,6 +435,7 @@ class Station:
         key = "predictions" if product == "predictions" else "data"
 
         return pd.json_normalize(json_dict[key])
+    
 
     def _parse_known_date_formats(self, dt_string: str):
         """Parse known date formats and return a datetime object.
@@ -748,7 +756,87 @@ class Station:
         self.data = df
 
         return df
+    
+    # def _check_derived_params():
+    #     #tbd
+    #     
+    def _make_dpapi_request(self,data_url:str,product:str)->pd.DataFrame:
+        res= requests.get(data_url)
+        if res.status_code != 200:
+            raise COOPSAPIError(
+                message=(
+                    f"CO-OPS DPAPI returned an error. Status Code: "
+                    f"{res.status_code}. Reason: {res.reason}\n"
+                ),
+            )
 
+        json_dict = res.json()
+
+        if "error" in json_dict:  # API can return an error even if status code is 200
+            err_msg = f"CO-OPS DPAPI returned an error: {json_dict['error']['message']}"
+            raise COOPSAPIError(err_msg)
+        for k,v in json_dict.items():
+            if isinstance(v,list):
+                return pd.json_normalize(json_dict[k])
+
+        raise COOPSAPIError(
+        message=f"No data returned for derived product: {product}"
+        )
+
+        
+        
+    def _build_dpapi_url(
+            self,
+            product:str,
+            year: Optional[int] = None,
+            datum: Optional[str] = None,
+            station_id:Optional[str]=None,
+            units: Optional[str] = "metric",
+        )->str:
+        
+        parameters={"name":product}
+        if station_id:
+            parameters["station"]= station_id
+        if year:
+            parameters["year"]= year
+        if datum:
+            parameters["datum"] = datum
+        if units:
+            parameters["units"] = units
+        
+
+
+        base_url="https://api.tidesandcurrents.noaa.gov/dpapi/prod/webapi/product/.json?"
+
+        request_url = requests.Request("GET", base_url, params=parameters).prepare().url
+        return request_url
+    
+    
+    def get_derived_product(
+            self,
+            product: str,
+            station_id:str,
+            begin_date: Optional[str] =None,
+            end_date: Optional[str] =None,
+            units: Optional[str] = "metric",
+            datum: Optional[str] = None,
+            )-> pd.DataFrame:
+        
+        # make sure product is a valid derived product
+        if product not in DPAPI_PRODUCTS:
+            raise ValueError(f"Invalid product. Choose from: {DPAPI_PRODUCTS}")
+
+
+        data_url= self._build_dpapi_url(product,station_id= station_id)
+        df= self._make_dpapi_request(data_url,product)
+        if df.empty:
+            raise COOPSAPIError(
+                f"No data returned for {product} product"
+            )
+        return df
+
+
+        
 
 if __name__ == "__main__":
     # DEBUGGING
