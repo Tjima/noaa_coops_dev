@@ -7,6 +7,7 @@ from typing import Optional, Union
 import pandas as pd
 import requests
 import zeep
+import time
 
 # API Date Limits (in days) per product
 API_LIMITS = {
@@ -745,12 +746,20 @@ class Station:
                     units,
                     time_zone,
                 )
-                try:
-                    df_block = self._make_api_request(data_url, product)
-                except COOPSAPIError:
-                    continue  # Skip block if no data returned (e.g, station was down)
+                # Retry logic with throttling
+                for attempt in range(3):
+                    try:
+                        df_block = self._make_api_request(data_url, product)
+                        time.sleep(0.5)  # Respect NOAA throttling
+                        break
+                    except COOPSAPIError:
+                        if attempt == 2:
+                            df_block = None
+                            break
+                        time.sleep(2)  # Wait before retry
 
-                df = pd.concat([df, df_block])
+                if df_block is not None:
+                    df = pd.concat([df, df_block])
 
         if df.empty:
             raise COOPSAPIError(
