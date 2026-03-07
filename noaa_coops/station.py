@@ -475,14 +475,13 @@ class Station:
                 str_yyyyMMdd_HHmm = date_time.strftime("%Y%m%d %H:%M")
                 return date_time, str_yyyyMMdd_HHmm
             except ValueError:
-                match = False  # Flag indicating no match for current format
+                continue
 
-        if not match:  # No match after trying all formats
-            raise ValueError(
-                f"Invalid date format '{dt_string}' provided."
-                "See https://tidesandcurrents.noaa.gov/api/ "
-                "for list of accepted date formats."
-            )
+        raise ValueError(
+            f"Invalid date format '{dt_string}' provided. "
+            "See https://tidesandcurrents.noaa.gov/api/ "
+            "for list of accepted date formats."
+        )
 
     def _check_product_params(
         self,
