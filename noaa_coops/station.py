@@ -21,12 +21,38 @@ class COOPSAPIError(Exception):
         self.message = message
         super().__init__(self.message)
 
-# add allowed derived api
-DPAPI_PRODUCTS=[
-        "toptenwaterlevels",
-        "extremewaterlevels",
-        "sealvltrends"
-    ]
+# Adding a list of different types of derived products
+HTF_PRODUCTS = ["htf_daily", "htf_monthly", "htf_seasonal", "htf_annual"]
+HTB_PRODUCTS = ["htb_monthly_max"] 
+HTB_BASE_PRODUCTS = ["htb"]          
+PATH_PRODUCTS = ["sealvltrends", "slr_projections", "extrfa"]
+PARAM_PRODUCTS = ["toptenwaterlevels", "annualflooddays", "extremewaterlevels", "peakwaterlevels"]
+
+# data limits mapper (product-> limit(in days))
+# product will return data for limit days at a time
+PRODUCT_LIMITS={
+    'water_level': 31,
+    'hourly_height': 365,
+    'high_low': 365,
+    'daily_mean': 3650,
+    'monthly_mean': 73000,
+    'one_minute_water_level': 4,
+    'predictions': 365,
+    'air_gap':31,
+    'air_temperature': 31,
+    'water_temperature': 31,
+    'wind': 31,
+    'air_pressure': 31,
+    'conductivity': 31,
+    'visibility': 31,
+    'humidity': 31,
+    'salinity': 31,
+    'currents': 31,
+    'currents_predictions': 31,
+    'ofs_water_level': 31,
+    'default': 31
+}
+
 def get_stations_from_bbox(
     lat_coords: list[float],
     lon_coords: list[float],
@@ -131,9 +157,7 @@ class Station:
 
         self.data_inventory = inventory_dict
 
-    def get_metadata(self):
-        # TBD: retrieval of historic current info
-         
+    def get_metadata(self):         
         """Get metadata for Station and append to Station object."""
         metadata_base_url = (
             "https://api.tidesandcurrents.noaa.gov/mdapi/" "prod/webapi/stations/"
@@ -141,7 +165,7 @@ class Station:
         extension = ".json"
         metadata_expand = (
             "?expand=details,sensors,products,disclaimers,"
-            "notices,datums,harcon,tidepredoffets,benchmarks,"
+            "notices,datums,harcon,tidepredoffsets,benchmarks,"
             "nearby,bins,deployments,currentpredictionoffsets,"
             "floodlevels"
         )
@@ -760,7 +784,20 @@ class Station:
     # def _check_derived_params():
     #     #tbd
     #     
-    def _make_dpapi_request(self,data_url:str,product:str)->pd.DataFrame:
+    def _make_dpapi_request(self, data_url: str, product: str) -> pd.DataFrame:
+        """Request data from CO-OPS DPAPI, handle response, return data as a DataFrame.
+
+        Args:
+            data_url (str): The URL to fetch data from.
+            product (str): The derived product name (used for error messages).
+
+        Returns:
+            DataFrame: Pandas DataFrame containing data from CO-OPS DPAPI.
+
+        Raises:
+            COOPSAPIError: If the API returns a non-200 status code, an error in
+                the response body, or no list data in the response.
+        """
         res= requests.get(data_url)
         if res.status_code != 200:
             raise COOPSAPIError(
@@ -786,48 +823,100 @@ class Station:
         
         
     def _build_dpapi_url(
-            self,
-            product:str,
-            year: Optional[int] = None,
-            datum: Optional[str] = None,
-            station_id:Optional[str]=None,
-            units: Optional[str] = "metric",
-        )->str:
-        
-        parameters={"name":product}
+        self,
+        product: str,
+        year: Optional[int] = None,
+        datum: Optional[str] = None,
+        station_id: Optional[str] = None,
+        units: Optional[str] = "metric",
+    ) -> str:
+        """Build a request URL for the NOAA CO-OPS DPAPI.     
+        Handles three distinct URL patterns based on product type.
+        See: https://api.tidesandcurrents.noaa.gov/dpapi/prod/
+        """
+        parameters = {}
         if station_id:
-            parameters["station"]= station_id
+            parameters["station"] = station_id
         if year:
-            parameters["year"]= year
+            parameters["year"] = year
         if datum:
             parameters["datum"] = datum
         if units:
             parameters["units"] = units
-        
 
+        base = "https://api.tidesandcurrents.noaa.gov/dpapi/prod/webapi/"
 
-        base_url="https://api.tidesandcurrents.noaa.gov/dpapi/prod/webapi/product/.json?"
+        if product in HTF_PRODUCTS:
+            # Pattern: /htf/htf_daily.json?
+            url = f"{base}htf/{product}.json?"
+            
+        elif product in HTB_PRODUCTS:
+            # Pattern: /htb/htb_monthly_max.json?
+            url = f"{base}htb/{product}.json?"
 
-        request_url = requests.Request("GET", base_url, params=parameters).prepare().url
-        return request_url
+        elif product in HTB_BASE_PRODUCTS:
+            # Pattern: /htb.json?
+            url = f"{base}htb.json?"
+
+        elif product in PATH_PRODUCTS:
+            # Pattern: /product/sealvltrends.json?
+            url = f"{base}product/{product}.json?"
+
+        else:
+            # Pattern: /product/.json?name=toptenwaterlevels
+            parameters["name"] = product
+            url = f"{base}product/.json?"
+
+        return requests.Request("GET", url, params=parameters).prepare().url
     
     
     def get_derived_product(
             self,
             product: str,
-            station_id:str,
-            begin_date: Optional[str] =None,
-            end_date: Optional[str] =None,
+            station_id: str,
+            begin_date=Optional[str],
+            end_date=Optional[str],
+            year:Optional[int] = None,
             units: Optional[str] = "metric",
             datum: Optional[str] = None,
-            )-> pd.DataFrame:
-        
+            ) -> pd.DataFrame:
+        """Fetch a derived product from the NOAA CO-OPS Derived Product API (DPAPI).
+
+        The DPAPI provides access to derived oceanographic products computed from
+        long-term water level observations.
+        See: https://api.tidesandcurrents.noaa.gov/dpapi/prod/
+
+        Args:
+            product (str): The derived product to fetch. Must be one of:
+                - "toptenwaterlevels": The 10 highest/lowest water levels on record.
+                - "extremewaterlevels": Annual extreme (high/low) water levels.
+                - 
+            station_id (str): The station ID to retrieve data for. See
+                https://tidesandcurrents.noaa.gov/ to find stations and their IDs.
+            year (int, optional): Year of data.
+            units (str, optional): Units for the data ("metric" or "english").
+                Defaults to "metric".
+            datum (str, optional): The datum to reference water levels to
+                (e.g. "MHHW", "MLLW"). Defaults to None.
+
+        Returns:
+            DataFrame: Pandas DataFrame containing the derived product data.
+
+        Raises:
+            ValueError: If the product is not a supported DPAPI product.
+            COOPSAPIError: If the API returns an error or no data.
+        """
         # make sure product is a valid derived product
-        if product not in DPAPI_PRODUCTS:
-            raise ValueError(f"Invalid product. Choose from: {DPAPI_PRODUCTS}")
+        all_products = HTF_PRODUCTS + HTB_PRODUCTS + HTB_BASE_PRODUCTS + PARAM_PRODUCTS + PATH_PRODUCTS
+        if product not in all_products:
+            raise ValueError(f"Invalid product '{product}'. Choose from: {all_products}")
 
-
-        data_url= self._build_dpapi_url(product,station_id= station_id)
+        data_url= self._build_dpapi_url(
+                        product,
+                        station_id= station_id,
+                        year=year,
+                        datum=datum,
+                        units=units)
         df= self._make_dpapi_request(data_url,product)
         if df.empty:
             raise COOPSAPIError(
