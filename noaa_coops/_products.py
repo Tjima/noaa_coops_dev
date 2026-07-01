@@ -97,6 +97,7 @@ PRODUCT_LIMITS: dict[str, int] = {
     "currents": 31,
     "currents_predictions": 31,
     "ofs_water_level": 31,
+    "default": 31,
 }
 
 
